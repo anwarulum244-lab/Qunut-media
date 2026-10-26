@@ -1,0 +1,100 @@
+name: Render Video Qunut
+
+on:
+  workflow_dispatch:
+
+env:
+  TOTAL_FRAMES: 4578
+  STEP: 300
+
+jobs:
+  chunks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Siapkan proyek
+        run: |
+          unzip -q qunut-video-remotion.zip -d proj
+          P=$(dirname "$(find proj -name package.json -not -path '*/node_modules/*' | head -1)")
+          echo "PROJ=$P" >> "$GITHUB_ENV"
+      - name: Pasang paket dan Chrome
+        working-directory: ${{ env.PROJ }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libxrandr2 libxkbcommon0 libxfixes3 libxcomposite1 libxdamage1 libgbm1 libcups2 libpango-1.0-0 libcairo2 libasound2t64 || true
+          npm ci --no-audit --no-fund
+          npx remotion browser ensure
+      - name: Render potongan
+        working-directory: ${{ env.PROJ }}
+        run: |
+          S=$(( ${{ matrix.chunk }} * STEP ))
+          E=$(( S + STEP - 1 )); [ $E -ge $TOTAL_FRAMES ] && E=$(( TOTAL_FRAMES - 1 ))
+          [ $S -ge $TOTAL_FRAMES ] && { echo "tidak ada frame"; exit 0; }
+          mkdir -p ../out
+          N=$(printf "c%03d" ${{ matrix.chunk }})
+          npx remotion render QunutFikih "$GITHUB_WORKSPACE/out_$N.mp4" --frames=$S-$E --muted --gl=swangle --concurrency=$(nproc) --crf=18 --pixel-format=yuv420p --codec=h264
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.chunk }}
+          path: out_c*.mp4
+          if-no-files-found: ignore
+
+  audio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Siapkan proyek
+        run: |
+          unzip -q qunut-video-remotion.zip -d proj
+          P=$(dirname "$(find proj -name package.json -not -path '*/node_modules/*' | head -1)")
+          echo "PROJ=$P" >> "$GITHUB_ENV"
+      - name: Render audio
+        working-directory: ${{ env.PROJ }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libxrandr2 libxkbcommon0 libxfixes3 libxcomposite1 libxdamage1 libgbm1 libcups2 libpango-1.0-0 libcairo2 libasound2t64 || true
+          npm ci --no-audit --no-fund
+          npx remotion browser ensure
+          npx remotion render QunutFikih "$GITHUB_WORKSPACE/audio.aac" --codec=aac --gl=swangle --concurrency=1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audio
+          path: audio.aac
+
+  merge:
+    needs: [chunks, audio]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-*
+          merge-multiple: true
+          path: parts
+      - uses: actions/download-artifact@v4
+        with:
+          name: audio
+          path: audio
+      - name: Gabungkan
+        run: |
+          ls -la parts audio
+          ls parts/out_c*.mp4 | sort | sed "s|^|file '$PWD/|;s|$|'|" > list.txt
+          ffmpeg -y -loglevel error -f concat -safe 0 -i list.txt -c copy video_only.mp4
+          ffmpeg -y -loglevel error -i video_only.mp4 -i audio/audio.aac -c:v copy -c:a copy -shortest qunut-fikih.mp4
+          ffprobe -v error -show_entries format=duration,size -of default=nw=1 qunut-fikih.mp4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qunut-fikih-mp4
+          path: qunut-fikih.mp4
+          retention-days: 7
