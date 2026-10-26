@@ -1,0 +1,59 @@
+name: Gabungkan Video Qunut yang Sudah Dirender
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Pasang FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+
+      - name: Unduh chunks dari Workflow #2
+        uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-*
+          merge-multiple: true
+          path: parts
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 40339507038
+
+      - name: Unduh audio dari Workflow #2
+        uses: actions/download-artifact@v4
+        with:
+          name: audio
+          path: audio
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 40339507038
+
+      - name: Gabungkan video dan audio
+        run: |
+          set -euo pipefail
+          echo 'Memeriksa hasil unduhan...'
+          ls -lh parts audio
+          test -f audio/audio.aac
+          count=$(find parts -maxdepth 1 -type f -name 'out_c*.mp4' | wc -l)
+          echo "Jumlah potongan: $count"
+          test "$count" -eq 16
+          find parts -maxdepth 1 -type f -name 'out_c*.mp4' -print | sort | sed "s|^|file '$PWD/|;s|$|'|" > list.txt
+          ffmpeg -y -f concat -safe 0 -i list.txt -c copy video_only.mp4
+          ffmpeg -y -i video_only.mp4 -i audio/audio.aac -c:v copy -c:a aac -shortest qunut-fikih.mp4
+          ffprobe -v error -show_entries format=duration,size -of default=nw=1 qunut-fikih.mp4
+
+      - name: Simpan video akhir
+        uses: actions/upload-artifact@v4
+        with:
+          name: qunut-fikih-mp4
+          path: qunut-fikih.mp4
+          retention-days: 7
